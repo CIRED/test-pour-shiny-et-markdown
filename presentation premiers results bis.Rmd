@@ -1,0 +1,440 @@
+---
+title: "Analyse des scénarios Idefese"
+author: "Idefese team"
+date: "8/28/2020"
+output:
+  ioslides_presentation : default
+  beamer_presentation: default
+  slidy_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=FALSE,echo = FALSE,warning = FALSE, message=FALSE)
+library(stats)
+library(sf)
+library(readxl)
+library(stringr)
+library(mapview) 
+library(ggmap)
+library(grid)
+library(gridExtra)
+library(plm)
+#library(OpenStreetMap)
+library(rgdal)
+library("ggspatial")
+library("ggrepel")
+#library(raster)
+library(tidyverse)
+library(mapview) 
+library(grid)
+library(gridExtra)
+library(openxlsx)
+library(corrplot)
+library(dplyr)
+library(raster)
+library(kableExtra)
+library(RColorBrewer)
+
+scenarios = c('Densi_jardin_hab_collectif','Densi_jardin_rural','Densi_lotissements','Forets','INSEE_central_loti','INSEE_haut_hab_collectif',
+              'INSEE_haut_loti','INSEE_haut_rural','Annee 1982','Annee 1987','Annee 1990','Annee 1994','Annee 1999','Annee 2003','Annee 2008',
+              'Annee 2012','Pacte_Vert','Pietonnisation_jardins','SDRIF_hab_collectif','SDRIF_lotissements','SDRIF_rural','SLUM_INSEE_central_lot'               ,'SLUM_INSEE_central_loti_mini', 'SLUM_INSEE_haut_hab_collectif','SLUM_INSEE_haut_hab_collectif_mini','SLUM_INSEE_haut_loti',
+              'SLUM_INSEE_haut_loti_mini','SLUM_INSEE_haut_rural','SLUM_INSEE_haut_rural_mini','Vegetalisation_bois_forets','Vegetalisation_parcs_                jardins')
+# chargement des shapefiles --------------------------------------------------
+
+# pour charger un shapefile
+Retention_Eau_Bassin_Versant<-st_read("Data/Retention_Flooding_WS.shp")
+Recharge_Locale_Bassin_Versant<-st_read("Data/Recharge_locale_WS.shp")
+Export_N_Bassin_Versant<-st_read("Data/Export_N_WS.shp")
+Export_P_Bassin_Versant<-st_read("Data/Export_P_WS.shp")
+
+names(Recharge_Locale_Bassin_Versant)[12:42] = scenarios
+names(Retention_Eau_Bassin_Versant)[11:41] = scenarios
+names(Export_N_Bassin_Versant)[11:41] = scenarios
+names(Export_P_Bassin_Versant)[11:41] = scenarios
+
+
+result_simulations <- read_excel("./Data/Evo_SE_SLUM_Pieto_mini.xlsx")
+
+result_simulations <-result_simulations %>% 
+  filter(! (Services %in% c('Retention N',
+                            'Retention P',
+                            'Recharge Locale Pondere WS',
+                            'Urban Flooding Pondere WS'))) %>% 
+  mutate(scenario_type=case_when(
+    Scenarios %in% c('Forets', 'Pietonnisation_jardins',
+                     'Vegetalisation_bois_forets','Vegetalisation_parcs_jardins',
+                     'Pacte_Vert') ~ 'Changement des parcs',
+    Scenarios %in% c('Densi_jardin_hab_collectif','Densi_jardin_rural',
+                     'Densi_lotissements') ~ 'Densification',
+    Scenarios %in% c('SDRIF_hab_collectif','SDRIF_lotissements','SDRIF_rural') ~ 'SDRIF',
+    grepl('INSEE', Scenarios, fixed = TRUE)  ~ 'INSEE',
+    TRUE ~ 'Actual data'
+  )) %>% 
+  mutate(year_vincent=case_when(
+    scenario_type == 'Changement des parcs' ~ 2020,
+    scenario_type == 'Densification' ~ 2045,
+    scenario_type == 'SDRIF' ~ 2030,
+    scenario_type == 'INSEE' ~ 2050,
+    TRUE ~ year
+  )) %>% 
+  mutate(is_actual_data=ifelse(scenario_type=='Actual data','yes',Scenarios))
+
+#description des scénarios
+scenars <- read_excel("./Data/Description Scenarios et Services.xlsx")
+population_IDF <- read_excel("./Data/population_ile_de_france.xlsx")
+```
+
+# Introduction
+
+## Messages globaux
+
+- les variations que l'on a simulées sont quasi-systématiquement **négligeables**
+  - il faudrait bien revérifier les paramètres dans Invest ?
+- l'action sur les parcs (plantation d'arbres dans les rues etc.) ont un impact qui peut être très grand devant les choix d'aménagement de la région (SDRIF etc.)
+  - nous n'avons pas modélisé de changement de pratique agricole -> cela pourrait être intéressant
+
+## Scénarios 1/3
+
+(Pour l'instant) 4 grands types de scénarios:
+
+- INSEE : basés sur les scénarios démographiques de l'INSEE + un modèle géographique
+- SDRIF : on suppose que les objectifs du SDRIF sont remplis avec différents types d'urbanisation
+- Changement des parcs : on végétalise la ville actuelle
+- Densification: on remplace les parcs par des logements
+
+Le lien entre type d'habitat et densité de population vient de ce [document de l'IAU](https://www.institutparisregion.fr/fileadmin/NewEtudes/Etude_762/Densites_Referentiel.pdf)
+<https://www.institutparisregion.fr/fileadmin/NewEtudes/Etude_762/Densites_Referentiel.pdf>
+
+
+## Scénarios 2/3
+
+Aperçu des scénarios (tout est dans le doc `Description Scenarios et Services.xlsx` )
+
+```{r les scenarios}
+scenarios_types<-result_simulations %>% 
+  dplyr::select('Scenarios','scenario_type','year_vincent') %>% 
+  distinct()
+
+scenars<-scenars %>% 
+  left_join(scenarios_types) 
+
+
+scenars %>% 
+  dplyr::select(c('scenario_type','Nom','Description')) %>% 
+  kbl() %>% 
+  kable_styling() 
+
+
+```
+
+## Scénarios 3/3
+
+```{r population dans les scenarios}
+
+
+ggplot(data=scenars) +
+  geom_line(data=population_IDF,aes(x=annee,y=IdF),linetype = "dashed")+
+  geom_point(aes(x=year_vincent,y=`Population additionnelle`+12174880,color=scenario_type))+ 
+  #geom_text_repel(aes(x=year_vincent,y=`Population additionnelle`+12174880,color=scenario_type,label=Scenarios))+
+  theme_grey()+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 6))+
+  ggtitle('Evolution de la population de la région dans les scénarios')+
+  labs(x = "Année",y = "Population Ile de France",color="Type de scénario") 
+
+
+
+```
+
+## Résultats des simulations
+
+Tout est en ligne aux adresses:
+
+<https://public.tableau.com/profile/mikou#!/vizhome/Variation_SE/Variation_1?publish=yes>
+
+<https://public.tableau.com/profile/mikou#!/vizhome/Variation_SE/Evolution_1?publish=yes>
+
+## Vue globale des services
+
+``` {r vue globale des services}
+
+ploti<-result_simulations %>% 
+  filter(! (Services %in% c('Rapport nojardin jardin','Recreation'))) %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit',scales = "free")+
+  theme_grey(base_size=8)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 6))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```
+
+# Analyse des services
+## Carbon capture (1/2)
+
+- **Scénarios INSEE et SDRIF** : décroissance dans la lignée des évolutions historiques
+- **Scénarios de changement des parcs** : on arrive à remonter un peu 
+- **au total** : les changements sont toujours négligeables
+
+## Carbon capture (2/2)
+
+```{r carbon storage}
+ploti<-result_simulations %>% 
+  filter(Services=='Carbon Storage') %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit',scales = "free")+
+  theme_grey(base_size=12)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 10))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```
+
+
+## Exports de N et P (1/2)
+
+- export N : peu d'impacts de nos scénarios (à part 2 scénarios INSEE extrêmes)
+- export P : le message est un peu différent : gros impacts des scénarios de modification des parcs actuels
+  - vérifier le paramétrage ?
+- zéro différence entre les scénarios SDRIF...
+- dans tous les cas, variation négligeable ?
+
+## Exports de N et P (2/2)
+
+```{r export}
+ploti<-result_simulations %>% 
+  filter(Services %in% c('Export N','Export P')) %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit',scales = "free")+
+  theme_grey(base_size=12)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 10))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```
+
+
+## Export de N par bassin versant
+```{r Export N}
+difference_entre_all_scenarios <- Export_N_Bassin_Versant %>% 
+  pivot_longer(-c(1:10,42),names_to = "scenario",values_to = "value")  %>% 
+  mutate(diff_with_2017=100*(value-Export_N_i)/Export_N_i) %>% 
+  st_as_sf(., sf_column_name = "geometry") 
+
+mapi<-ggplot()+
+  geom_sf(data=difference_entre_all_scenarios,aes(fill=diff_with_2017)) +
+  scale_fill_distiller(type = "div",
+                       palette='RdBu',direction =-1, #pour que rouge = negatif et bleu = positif
+                       #palette='Spectral',
+                       #limit =  max(abs(difference_entre_all_scenarios$diff_with_2017),na.rm = TRUE) * c(-1, 1),
+                       limit =  c(-50,50),
+                       na.value = NA)+
+  facet_wrap('scenario')+
+  xlab("") + ylab("") +
+  annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+  annotation_north_arrow(location = "tr", 
+                         which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+                         style = north_arrow_fancy_orienteering,#
+                         height = unit(0.3, "in"),
+                         width = unit(0.3, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+  labs(fill = "Variation (%)")+
+  ggtitle("Service d'export de N")
+  
+plot(mapi)
+``` 
+
+
+## Export de P par bassin versant
+```{r Export P}
+difference_entre_all_scenarios <- Export_P_Bassin_Versant %>% 
+  pivot_longer(-c(1:10,42),names_to = "scenario",values_to = "value")  %>% 
+  mutate(diff_with_2017=100*(value-Export_N_i)/Export_N_i) %>% 
+  st_as_sf(., sf_column_name = "geometry") 
+
+mapi<-ggplot()+
+  geom_sf(data=difference_entre_all_scenarios,aes(fill=diff_with_2017)) +
+  scale_fill_distiller(type = "div",
+                       palette='RdBu',direction =-1, #pour que rouge = negatif et bleu = positif
+                       #palette='Spectral',
+                       #limit =  max(abs(difference_entre_all_scenarios$diff_with_2017),na.rm = TRUE) * c(-1, 1),
+                       limit =  c(-50,50),
+                       na.value = NA)+
+  facet_wrap('scenario')+
+  xlab("") + ylab("") +
+  annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+  annotation_north_arrow(location = "tr", 
+                         which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+                         style = north_arrow_fancy_orienteering,#
+                         height = unit(0.3, "in"),
+                         width = unit(0.3, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+  labs(fill = "Variation (%)")+
+  ggtitle("Service d'export de P")
+  
+plot(mapi)
+``` 
+
+
+## Recharge des nappes et urban flooding (1/2)
+- conclusions similaires dans les 2 cas
+  - pour la recharge on a une augmentation dans tous nos scénarios vs. une baisse historique
+- Nos scénarios ont un grand rôle, plus important que les variations passées
+- mais cela reste faible dans tous les cas?
+
+## Recharge des nappes et urban flooding (2/2)
+```{r recharge}
+ploti<-result_simulations %>% 
+  filter(Services %in% c('Recharge Locale Total','Urban Flooding Total')) %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit',scales = "free")+
+  theme_grey(base_size=12)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 10))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```
+
+## cartes par bassins versants 1
+
+```{r cartes retention}
+difference_entre_all_scenarios <- Retention_Eau_Bassin_Versant %>% 
+  pivot_longer(-c(1:10,42),names_to = "scenario",values_to = "value")  %>% 
+  mutate(diff_with_2017=100*(value-Ret_ini)/Ret_ini) %>%  
+  st_as_sf(., sf_column_name = "geometry") 
+
+mapi<-ggplot()+
+  geom_sf(data=difference_entre_all_scenarios,aes(fill=diff_with_2017)) +
+  scale_fill_distiller(type = "div",
+                       palette='RdBu',direction =-1, #pour que rouge = negatif et bleu = positif
+                       #palette='Spectral',
+                       limit =  max(abs(difference_entre_all_scenarios$diff_with_2017),na.rm = TRUE) * c(-1, 1),
+                       #limit =  c(-50,50)
+                       na.value = NA)+
+  facet_wrap('scenario')+
+  xlab("") + ylab("") +
+  annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+  annotation_north_arrow(location = "tr", 
+                         which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+                         style = north_arrow_fancy_orienteering,#
+                         height = unit(0.3, "in"),
+                         width = unit(0.3, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+  labs(fill = "Variation (%)")+
+  ggtitle("Service de retention d'eau")
+
+#pour afficher la carte à l'écran (optionnel et long ici)
+plot(mapi)
+
+
+```
+
+## cartes par bassins versants 2
+
+```{r cartes nappes}
+difference_entre_all_scenarios <- Recharge_Locale_Bassin_Versant %>% 
+  pivot_longer(-c(1:11,43),names_to = "scenario",values_to = "value")  %>% #on utilise la puissance de R...
+  mutate(diff_with_2017=100*(value-L_ini)/L_ini) %>%  #on calcule la différence avec 2017
+  st_as_sf(., sf_column_name = "geometry") #Hack : les calculs d'avant enlevent le fait que R voit l'objet comme une carte, du coup on le lui redit
+
+mapi<-ggplot()+
+  geom_sf(data=difference_entre_all_scenarios,aes(fill=diff_with_2017)) +
+  scale_fill_distiller(type = "div",
+                       palette='RdBu',direction =-1, #pour que rouge = negatif et bleu = positif
+                       #palette='Spectral',
+                       limit =  max(abs(difference_entre_all_scenarios$diff_with_2017),na.rm = TRUE) * c(-1, 1),
+                       #limit =  c(-50,50)
+                       na.value = NA)+
+  facet_wrap('scenario')+
+  xlab("") + ylab("") +
+  annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+  annotation_north_arrow(location = "tr", 
+                         which_north = "true", 
+                         pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+                         style = north_arrow_fancy_orienteering,#
+                         height = unit(0.3, "in"),
+                         width = unit(0.3, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+  labs(fill = "Variation (%)")+
+  ggtitle("Service de recharge des nappes")
+
+plot(mapi)
+```
+
+## Urban Cooling (1/2)
+
+- Variation très faible (< 0.5°C)
+- une question intéressante: l'évolution n'est pas la même pour les nouveaux habitants, et pour ceux déjà en place
+
+## Urban Cooling (2/2)
+```{r cooling}
+ploti<-result_simulations %>% 
+  filter(Services %in% c('Urban Cooling','Urban Cooling New Pop')) %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit')+
+  theme_grey(base_size=12)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 10))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```
+
+
+## Recreation (1/2)
+
+- le modèle le plus sensible
+- Mais aussi celui sur lequel il y a le moins de littérature...
+- les résultats dépendent fortement de si on inclut dans la récréation les jardins privés ou non
+  - On a fait 2 catégories: la récréation pour ceux qui ont un jardin, et pour ceux qui n'en ont pas
+
+## Recreation (2/2)
+
+```{r recreation}
+ploti<-result_simulations %>% 
+  filter(Services %in% c('Rapport nojardin jardin',
+                         'Recreation no Jardin',
+                         'Recreation Jardin')) %>% 
+  mutate(nom_et_unit=paste0(Services,"\n(",str_wrap(Unité,width = 40),")")) %>% 
+  ggplot(data=.)+
+  geom_point(aes(x=as.numeric(year_vincent),y= SE_absolu,color=scenario_type))+
+  geom_line(aes(x=as.numeric(year_vincent),y= SE_absolu,group=is_actual_data),linetype="dotdash")+
+  facet_wrap('nom_et_unit',scales = "free")+
+  theme_grey(base_size=12)+
+  theme(axis.ticks = element_blank(),legend.position="bottom",strip.text.x = element_text(size = 10))+
+  ggtitle('Vue globale des services')+
+  labs(x = "Year",y = "",color="Type de scénario") 
+
+#plot(ploti,width=297,height=210,units ='mm')
+plot(ploti)
+```

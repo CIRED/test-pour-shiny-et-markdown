@@ -1,0 +1,1133 @@
+---
+title: "Analyse historique"
+author: "Vincent Viguié"
+date: Sys,Date()
+output:
+  html_document: 
+    toc: yes
+    fig_caption: yes
+    toc_depth: 3
+    number_sections: true
+  html_notebook:
+  pdf_document: 
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=FALSE,echo = FALSE,warning = FALSE, message=FALSE)
+library(stats)
+library(readxl)
+library(sf)
+library(mapview) 
+library(ggmap)
+library(grid)
+library(gridExtra)
+library(plm)
+#library(OpenStreetMap)
+library(rgdal)
+library("ggspatial")
+library("ggrepel")
+#library(raster)
+library(tidyverse)
+library(mapview) 
+library(grid)
+library(gridExtra)
+library(openxlsx)
+library(corrplot)
+library(raster)
+library(dplyr)
+library(knitr)
+options(Encoding="UTF-8")
+setwd("/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/Artificialisation/")
+```
+
+# Introduction : le MOS et son évolution
+
+Afin de mieux comprendre les résultats, on regroupe le MOS en 7 catégories.
+
+La nomenclature du MOS est [ici](https://www.iau-idf.fr/fileadmin/DataStorage/IauEtVous/CartesEtDonnees/Mos/NomenclatureMOS-11-24-47-81.pdf).
+
+```{r chargement data,include = FALSE}
+load("evolumos_non_spatial.rda")
+
+evolumos<-evolumos.non_spatial %>% 
+  dplyr::select(OBJECTID,INSEE,FID_commun,Shape_Area,c(ends_with("_81")))%>% 
+  pivot_longer(ends_with("_81")) 
+
+# correspondances<-as.data.frame(seq(1,81)) %>% 
+#   rename(value=1) %>% 
+#   mutate(categorie=case_when(
+#     value %in% c(1,3) ~ "Forest",
+#     value %in% c(2) ~ "Coupes",
+#     value %in% c(4) ~ "Open",
+#     value %in% c(5,seq(11,12)) ~ "Banks",
+#     value %in% c(6,seq(8,10)) ~ "Agric",
+#     value %in% c(7) ~ "Meadows",
+#     value %in% c(seq(13,27)) ~ "Semi-Natural",
+#     TRUE ~ "Urban"
+#   ))
+
+# correspondances<-as.data.frame(seq(1,81)) %>% 
+#   rename(value=1) %>% 
+#   mutate(categorie=case_when(
+#     value %in% c(1,3) ~ "Forest",
+#     value %in% c(seq(11,12)) ~ "Water",
+#     value %in% c(2) ~ "Coupes",
+#     value %in% c(6,seq(8,10)) ~ "Agric",
+#     value %in% c(4,5,7) ~ "Meadows or open",
+#     value %in% c(seq(13,27)) ~ "Semi-Natural",
+#     TRUE ~ "Urban"
+#   ))
+
+correspondances<-as.data.frame(seq(1,81)) %>% 
+  rename(value=1) %>% 
+  mutate(categorie=case_when(
+    value %in% c(1,2,3) ~ "Forest",
+    value %in% c(6,seq(8,10)) ~ "Agric",
+    value %in% c(4,5,7) ~ "Meadows or open",
+    value %in% c(seq(13,27),seq(11,12)) ~ "Semi-Natural",
+    TRUE ~ "Urban"
+  ))
+
+moyenne_groupe<-evolumos %>% 
+  left_join(.,correspondances,by=('value')) %>% 
+  dplyr::select(-c('value','FID_commun')) %>% 
+  separate (name, into = c("annee","rien"),sep="_") %>% 
+  separate (annee, into = c("rien","annee"),sep="MOS") %>% 
+  dplyr::select((-rien)) %>% 
+  mutate(annee=as.numeric(annee)) 
+
+moyenne_groupe2<-moyenne_groupe %>% 
+  dplyr::select(OBJECTID,annee,categorie,Shape_Area) %>% 
+  group_by(OBJECTID)%>% 
+  arrange(OBJECTID,annee) %>% 
+  pivot_wider(names_from = annee, values_from = categorie)
+
+moyenne_groupe2_cate2<-moyenne_groupe2
+  for (index in seq(3,dim(moyenne_groupe2_cate2)[2]-1)){
+    nom_avant<-names(moyenne_groupe2_cate2)[index]
+    nom_apres<-names(moyenne_groupe2_cate2)[index+1]
+    moyenne_groupe2_cate2<-moyenne_groupe2_cate2 %>% 
+      rename(avant=names(moyenne_groupe2)[index],
+             apres=names(moyenne_groupe2)[index+1]) %>% 
+      mutate(flux=paste(avant,apres,sep=" --> ")) %>% 
+      mutate(flux=ifelse(
+        index==apres,avant,flux)) 
+    #pour renommer les colonnes
+    names(moyenne_groupe2_cate2)[match(c('avant','apres'), names(moyenne_groupe2_cate2))]<-c(nom_avant,nom_apres)
+    names(moyenne_groupe2_cate2)[match(c('flux'), names(moyenne_groupe2_cate2))]<-paste0('flux_cate_',nom_avant)
+    
+  }
+
+fond_carte<-st_read('../Occupation_sol_admin/communes_Idf_bis/COMMUNE.shp')%>% 
+  dplyr::select(c(1,4,12))
+#on ajoute les arrondissements
+fond_carte<-st_read('../Occupation_sol_admin/communes_Idf_bis/ARRONDISSEMENT.shp') %>% 
+  dplyr::select(c(1,4,5))%>% 
+  rbind(.,fond_carte) %>% 
+  dplyr::filter(CODE_INSEE!='75056')
+
+departements<-st_read('../Occupation_sol_admin/Departements/departements.shp')
+
+``` 
+
+On regarde ici l'évolution entre 1982 et 2017.
+On regroupe ainsi les catégories du MOS en zones "agricoles", "berges", "coupes" (forêts coupées), "forêts", "prairies", eau", "milieux semi naturels" (parcs, golfs etc.)" et "zones urbaines". NB: on peut facilement changer cette nomenclature...
+
+```{r table}
+correspondances %>% 
+  rename(code_MOS=value) %>% 
+rmarkdown::paged_table(.)
+#DT::datatable(.)
+
+```
+
+Voici les évolutions totales de surface:
+
+```{r total surface}
+  bilan<- moyenne_groupe2_cate2 %>% 
+    ungroup() %>% 
+    dplyr::select(seq(1,11)) %>% 
+    pivot_longer(-c(1,2),names_to = 'annee',values_to = 'categorie') %>% 
+  group_by(annee, categorie) %>% 
+  summarise(total=sum(Shape_Area)/1000000)
+
+evolution_total<-  ggplot(data=bilan) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(annee),y= total,group=categorie))+
+    geom_point(aes(x=as.numeric(annee),y= total))+
+    theme_grey(base_size=12)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_wrap('categorie', drop=TRUE)+
+    ggtitle('Total (km2)')+
+    labs(x = "Year") +
+    labs(y = "km2") 
+  plot(evolution_total,width=297,height=210,units ='mm')
+  #ggsave("carbon_total_net.png",plot=carbon_total_net,width=297,height=210,units ='mm') 
+
+
+```
+
+
+Voici à quoi ressemblent les flux nets de chaque catégorie vers chaque autre, moyennés par année. Les flux principaux, et qui vont jouer un rôle déterminant pour les SE, sont de 3 types:
+
+* la transformation importante de zones agricoles en prairies
+
+* le passage coupes <-> forêts (on opeut supposer qu'il oscille d'une année à l'autre)
+
+* les conséquences de l'urbanisation: 
+  + le passage de zones gricoles en zones urbanisés, 
+  + le passage de zones gricoles en berges et en zones semi-naturelles,
+  + le passage de zones semi-naturelles en zones urbanisés
+
+```{r calcul bilan,include = FALSE}
+  bilan<- moyenne_groupe2_cate2 %>% 
+    ungroup() %>% 
+    dplyr::select(starts_with('flux')) %>% 
+    pivot_longer(.,seq(1,8)) 
+  
+  bilan<-unique(bilan$value) %>% 
+    sort(.) %>% 
+    as.data.frame(.) 
+  names(bilan)<-'transition'
+  for (annee in seq(3,10)) {
+    tmp<-moyenne_groupe2_cate2 %>% 
+      dplyr::select(c(1,annee+9,Shape_Area))
+    
+    tmp<-tmp%>% 
+      rename(transition=names(tmp)[2]) 
+    
+    tmp2<-tmp%>% 
+      group_by(transition) %>% 
+      summarise(total_area=sum(Shape_Area)/1000000) %>% 
+      mutate(flux_per_year=total_area/(as.numeric(colnames(moyenne_groupe2_cate2)[annee+1])-as.numeric(colnames(moyenne_groupe2_cate2)[annee])))
+    names(tmp2)[3]<-colnames(moyenne_groupe2_cate2)[annee]
+    
+    bilan<-tmp2 %>% 
+      dplyr::select(1,3) %>% 
+      left_join(bilan,.,by.x='transition',by.y='transition')
+  }
+``` 
+
+```{r flux nets surface}
+ bilan[is.na(bilan)]=0
+  
+  bilan2<-bilan %>% 
+    ungroup() %>% 
+    pivot_longer(-1,names_to = 'annee') %>% 
+              mutate(
+      value=ifelse(transition=="Urban --> Urban",NA,value),
+      value=ifelse(transition=="Agric --> Agric",NA,value),
+      value=ifelse(transition=="Agric2 --> Agric2",NA,value),
+      value=ifelse(transition=="Semi-Natural --> Semi-Natural",NA,value),
+      value=ifelse(transition=="Natural2 --> Natural2",NA,value),
+      value=ifelse(transition=="Water --> Water",NA,value),
+      value=ifelse(transition=="Banks --> Banks",NA,value),
+      value=ifelse(transition=="Open --> Open",NA,value),
+      value=ifelse(transition=="Water --> Water",NA,value),
+      value=ifelse(transition=="Meadows or open --> Meadows or open",NA,value),
+      value=ifelse(transition=="Forest --> Forest",NA,value),
+      value=ifelse(transition=="Coupes --> Coupes",NA,value),
+      value=ifelse(transition=="Meadows --> Meadows",NA,value),
+      value=ifelse(transition=="Natural --> Natural",NA,value))   %>% 
+    separate(transition,into=c('avant','apres'),sep=" --> ") 
+    
+    bilan2b<-bilan2 %>% 
+      mutate(value_reciproque=value) %>% 
+      mutate(value_reciproque=ifelse(avant==apres,0,value_reciproque)) %>% 
+      dplyr::select(-value)
+    
+    bilan2<-bilan2 %>% 
+      left_join(bilan2b,by=c('annee'='annee','avant'='apres','apres'='avant')) %>% 
+      mutate(value_net=value-value_reciproque)
+    
+    bilan_net<-bilan2     %>%
+      mutate(dx = pmin(avant, apres), dy = pmax(avant, apres))%>%
+      distinct(dx, dy,annee,.keep_all = TRUE) %>%
+      dplyr::select(-dx, -dy) %>% 
+      rename(After=apres,
+             Before=avant)
+  
+  flow_total_net<-  ggplot(data=bilan_net) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(annee),y= value_net))+
+    geom_point(aes(x=as.numeric(annee),y= value_net))+
+    theme_grey(base_size=15)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_grid(After~Before, drop=TRUE, labeller= label_both)+
+    ggtitle('Net flow (km2/year)')+
+    labs(x = "Year") +
+    labs(y = "km2/year") 
+  plot(flow_total_net)
+  ggsave("flow_total_net.png",plot=flow_total_net,width=297,height=210,units ='mm') 
+
+```
+  
+Plus intéressants sont l'évolution dews flux bruts, c'est-à-dire où on sépare les évolution dans chaque sens. On peut y voir que les transitions "agricole --> prairie" sont en fait la somme de plein de transitions dans les 2 sens. Il en va de même pour les transitions "coupe --> bois".  
+
+On peut également voir qu'il y a quelques flux de désartifialisartion, et notamment des passages d'urbain à berges et à semi-naturel.
+
+
+```{r classi flux bruts surface}
+  bilan[is.na(bilan)]<-0
+  bilan2<-bilan %>% 
+    pivot_longer(-1)
+  
+  flux_surface<- bilan2 %>% 
+    # filter((transition!="Urban --> Urban")&
+    #          (transition!="Agric --> Agric")&
+    #          (transition!="Agric2 --> Agric2")&
+    #          (transition!="Semi-Natural --> Semi-Natural")&
+    #          (transition!="Natural2 --> Natural2")&
+    #          (transition!="Water --> Water")&
+    #          (transition!="Banks --> Banks")&
+    #          (transition!="Forest --> Forest")&
+    #          (transition!="Coupes --> Coupes")&
+    #          (transition!="Meadows --> Meadows")&
+    #          (transition!="Natural --> Natural")) %>% 
+    mutate(
+      value=ifelse(transition=="Urban --> Urban",NA,value),
+      value=ifelse(transition=="Agric --> Agric",NA,value),
+      value=ifelse(transition=="Agric2 --> Agric2",NA,value),
+      value=ifelse(transition=="Semi-Natural --> Semi-Natural",NA,value),
+      value=ifelse(transition=="Natural2 --> Natural2",NA,value),
+      value=ifelse(transition=="Water --> Water",NA,value),
+      value=ifelse(transition=="Meadows or open --> Meadows or open",NA,value),
+      value=ifelse(transition=="Banks --> Banks",NA,value),
+      value=ifelse(transition=="Open --> Open",NA,value),
+      value=ifelse(transition=="Forest --> Forest",NA,value),
+      value=ifelse(transition=="Coupes --> Coupes",NA,value),
+      value=ifelse(transition=="Meadows --> Meadows",NA,value),
+      value=ifelse(transition=="Natural --> Natural",NA,value)) %>% 
+    separate(transition,into=c('Before','After'),sep=" --> ") %>% 
+  ggplot(data=.) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(name),y= value))+
+    geom_point(aes(x=as.numeric(name),y= value))+
+    theme_grey(base_size=15)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    #facet_wrap(ncol=7,vars(transition))+
+    facet_grid(After~Before, drop=TRUE,labeller = label_both)+#+labeller = label_wrap_gen(width=10)
+    ggtitle('Gross flow (km2/year)')+
+    labs(x = "Year") +
+    labs(y = "km2/year") 
+    #geom_hline(yintercept=0)
+  plot(flux_surface,width=297,height=210,units ='mm')
+  ggsave("flux_total_brut.png",plot=flux_surface,width=297,height=210,units ='mm') 
+
+```
+
+## Cartes d'évolution
+
+```{r cartes mos}
+#evolumos.complet<-readOGR(dsn="../Occupation_sol_admin/MOS_2017_81postes/MOS_2017_shp/shp")
+moyenne_groupe3<-moyenne_groupe %>% 
+  dplyr::select(OBJECTID,annee,categorie,Shape_Area,INSEE) %>% 
+  group_by(OBJECTID)%>% 
+  arrange(OBJECTID,annee) %>% 
+  pivot_wider(names_from = annee, values_from = categorie)
+
+taille_communes<-moyenne_groupe3 %>% 
+  group_by(INSEE) %>% 
+  summarise(surface=sum(Shape_Area))
+
+tmp<- moyenne_groupe3 %>% 
+  rename('avant'='1982','apres'='2017') %>% 
+  group_by(INSEE,avant,apres) %>% 
+  summarise(value=sum(Shape_Area)) %>% 
+  left_join(taille_communes,by='INSEE') %>% 
+  mutate(value=value/surface*100)
+
+tmp_reciproque<-tmp %>% 
+  mutate(value_reciproque=value) %>% 
+  mutate(value_reciproque=ifelse(avant==apres,0,value_reciproque)) %>% 
+  dplyr::select(-value)
+  
+tmp2bis<-tmp %>% 
+  left_join(tmp_reciproque,by=c('INSEE'='INSEE','avant'='apres','apres'='avant')) %>% 
+  mutate(value_net=value-value_reciproque) 
+
+tmp2<-tmp2bis%>% 
+  mutate(dx = pmin(avant, apres), dy = pmax(avant, apres))%>%
+  dplyr::select(INSEE,value_net,dx,dy,avant,apres) %>% 
+  arrange(INSEE,dx,dy) %>% 
+  ungroup()%>% 
+  dplyr::distinct(.,dx,dy,INSEE,.keep_all = TRUE)%>%
+      dplyr::select(-dx, -dy) %>% 
+      rename(After=apres,
+             Before=avant)
+
+tmp3<-tmp2 %>% 
+  mutate(flux=paste(After,Before,sep = " --> "))%>% 
+  ungroup() %>% 
+  dplyr::select(- Before ,- After )%>% 
+  pivot_wider(id_cols=INSEE,names_from = flux,values_from = value_net)
+ 
+tmp3[is.na(tmp3)]<-0 
+
+valuei<-c(-Inf, -30,-15,-5,-1,1,5,15,30, Inf)
+labeli<-c("lower than -30","[-30,-15]","[-15,-5]","[-5,-1]","[-1,1]","[1,5]","[5,15]","[15,30]","more than 30")
+labeli<-c(
+  "Lower than -30%",
+  "-30% to -15%",
+  "-15% to -5%",
+  "-5% to -1%",
+  "-1% to +1%",
+  "+1% to +5%",
+  "+5% to +15%",
+  "+15% to +30%",
+  "More than 30%")
+
+for (name in unique(tmp2bis$avant)){
+  
+  transition<-tmp2bis %>% 
+  filter(apres==name & avant!=name) %>% 
+  group_by(INSEE) %>% 
+  summarise(flux=sum(value_net)) %>% 
+    mutate(flux2=cut(flux, breaks=valuei, labels=labeli)) 
+  
+combine<-fond_carte %>% 
+  merge(.,transition,by.x='CODE_INSEE',by.y='INSEE',all.x = TRUE) 
+
+combine$flux[is.na(combine$flux)]=0
+#je n'arrive pas a remplacer les NA de flux 2 par un facteur, du coup je redefinis flux2...
+combine$flux2<-cut(combine$flux, breaks=valuei, labels=labeli)
+
+
+mapi<-ggplot(combine) +
+  #scale_fill_gradient2()+
+  geom_sf(aes(fill = flux),lwd = 0.01)+
+  geom_sf(data=departements,fill=NA,lwd = 0.1)+
+  scale_fill_distiller(type = "div", 
+                       #palette='RdBu', 
+                       palette='Spectral', 
+                        limit =  max(abs(combine$flux)) * c(-1, 1)
+                      # limit =  c(-50,50)
+                       )+
+  xlab("") + ylab("") +
+    annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+    annotation_north_arrow(location = "tr", 
+                           which_north = "true", 
+        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+          style = north_arrow_fancy_orienteering,#
+        height = unit(0.4, "in"),
+        width = unit(0.4, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+ labs(fill = "% of surface\nconverted")+
+     ggtitle(paste0("Transitions to ",name))
+
+
+mapi2<-ggplot(combine) +
+  #scale_fill_gradient2()+
+  geom_sf(aes(fill = flux2),lwd = 0.01)+
+  geom_sf(data=departements,fill=NA,lwd = 0.1)+
+  scale_fill_brewer(palette='Spectral',drop=FALSE)+#,values=valuei,labels=labeli
+  xlab("") + ylab("") +
+    annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+    annotation_north_arrow(location = "tr", 
+                           which_north = "true", 
+        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+          style = north_arrow_fancy_orienteering,#
+        height = unit(0.4, "in"),
+        width = unit(0.4, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+ labs(fill = "% of surface\nconverted")+
+     ggtitle(paste0("Transitions to ",name))
+
+plot(mapi2)
+
+ggsave(paste0("transitions_to_",name,".png"), plot=mapi)
+ggsave(paste0("bis_transitions_to_",name,".png"), plot=mapi2)
+  
+}
+
+
+
+```
+
+
+# Analyse des services écosystémiques simples: stockage de C et production alimentaire
+En fait, dans Invest, ces services sont a-spartiaux : ils dépensent juste du total des types d'usage du sol, mais pas de là où sont ces usages. Pour le stockage de C, on veut juste savoir combien il y a de C stocké au total, et pour la production alimentaire, combien on peut produire. L'évolution de ces services est donc un reflet direct des évolutions qu'il y a dans le MOS et des tables de correspondances que l'on a utilisées.
+
+## Production alimentaire
+On a supposé jusque là, si j'ai bien compris, que la production alimentaire = la surface de terres agricoles. 
+Du coup, c'est simple, la surface baisse:
+
+```{r baisse produc alimentaire}
+
+  bilan_alim_total<- moyenne_groupe2_cate2 %>% 
+    ungroup() %>% 
+    dplyr::select(seq(1,11)) %>% 
+    pivot_longer(-c(1,2),names_to = 'annee',values_to = 'categorie') %>% 
+  group_by(annee, categorie) %>% 
+  summarise(total=sum(Shape_Area)/1000000) %>% 
+  filter(categorie=='Agric')
+
+
+evolution_total<-  ggplot(data=bilan_alim_total) +
+    geom_line(aes(x=as.numeric(annee),y= total,group=categorie))+
+    geom_point(aes(x=as.numeric(annee),y= total))+
+    theme_grey(base_size=12)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    ggtitle('variations totales des surfaces de production alimentaire en île de France')+
+    labs(x = "Year") +
+    labs(y = "km2") 
+  plot(evolution_total,width=297,height=210,units ='mm')
+  #ggsave("carbon_total_net.png",plot=carbon_total_net,width=297,height=210,units ='mm') 
+  
+```
+
+
+Le point important, c'est que la baisse ne provient pas que de l'urbanisation, loin de là: la baisse provient pour moitié de la transformation des surfaces agricoles en prairies. L'autre moitié de la baisse releve par contre de l'urbanisation (conversion en surfaces urbaines, semi-naturelles ou berges). C'est ce que l'on voit ici:
+
+```{r agri}
+  
+  carbon_total_net<-  bilan_net %>% 
+  filter(avant=='Agric') %>% 
+  filter(apres!='Agric') %>% 
+  dplyr::select(-'avant') %>% 
+  rename('transition_to'='apres')   %>% 
+  ggplot(data=.) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(annee),y= value_net))+
+    geom_point(aes(x=as.numeric(annee),y= value_net))+
+    theme_grey(base_size=12)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_wrap('transition_to', drop=TRUE,labeller = label_both)+
+    ggtitle('Losses in agricultural land (km2/year)')+
+    labs(x = "Year") +
+    labs(y = "km2/year") 
+  plot(carbon_total_net)
+  #ggsave("carbon_total_net.png",plot=carbon_total_net,width=297,height=210,units ='mm') 
+
+```
+
+**Question** Doit-on essayer de dire un truc sur l'impact des prairies sur la production alimentaire? Ou de dire des choses sur l'agriculture bio? (sur la production totale d'ÎdF par exemple).
+
+## Stockage de C
+
+Même idée, le Stock total de carbone baisse au cours du temps. La baisse ralentit cependant au début des années 2000.
+
+```{r stockage C}
+land_carbon<-read.csv('../2- Carbon Storage/1- Données/carbon_pools_81p_lana.csv',sep=';')
+
+carbon_stock<-evolumos.non_spatial %>% 
+  dplyr::select(OBJECTID,INSEE,FID_commun,Shape_Area,c(ends_with("_81"))) %>% 
+  pivot_longer(ends_with("_81")) %>% 
+  merge(.,land_carbon,by.x='value',by.y='lucode') 
+
+carbon_stock2<-carbon_stock %>% 
+  mutate(carbon_content=(c_soil+c_above+c_below+c_dead)*Shape_Area/1000) %>% 
+  rename(code_MOS=value)
+      
+  
+total_an<-carbon_stock2 %>% 
+  group_by(name) %>% 
+  summarise(total=sum(carbon_content)*100/1000000)%>% 
+  #extract(name,"annee","MOS*_81")
+  separate (name, into = c("annee","rien"),sep="_") %>% 
+  separate (annee, into = c("rien","annee"),sep="MOS") %>% 
+  dplyr::select((-1)) %>% 
+  mutate(annee=as.numeric(annee)) %>% 
+  ggplot(.)+
+    geom_line(aes(x=annee,y= total))+
+    geom_point(aes(x=annee,y= total))+
+    theme_grey(base_size=12)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    ggtitle('variations totales du stockage de carbone en île de France')+
+    labs(x = "Year") +
+    labs(y = "tonnes de C") 
+  plot(total_an)
+
+```
+
+
+```{r flux C calcul}
+
+correspondances<-correspondances %>% 
+  rename("code_MOS"="value")
+
+moyenne_groupe_C<-carbon_stock2 %>% 
+  left_join(.,correspondances,by=("code_MOS"))%>% 
+  dplyr::select(-'code_MOS') %>% 
+  separate (name, into = c("annee","rien"),sep="_") %>% 
+  separate (annee, into = c("rien","annee"),sep="MOS") %>% 
+  dplyr::select((-rien)) %>% 
+  mutate(annee=as.numeric(annee)) 
+
+
+  moyenne_groupe2_content_C<-moyenne_groupe_C %>% 
+  dplyr::select(OBJECTID,annee,carbon_content) %>% 
+  group_by(OBJECTID)%>% 
+  arrange(OBJECTID,annee) %>% 
+  pivot_wider(names_from = annee, values_from = carbon_content)
+
+moyenne_groupe2_content2_C<-moyenne_groupe2_content_C
+for (index in seq(2,dim(moyenne_groupe2_content2_C)[2]-1)){
+  nom_avant<-names(moyenne_groupe2_content2_C)[index]
+  nom_apres<-names(moyenne_groupe2_content2_C)[index+1]
+  moyenne_groupe2_content2_C<-moyenne_groupe2_content2_C %>% 
+    rename(avant=names(moyenne_groupe2_content_C)[index],
+           apres=names(moyenne_groupe2_content_C)[index+1]) %>% 
+    #mutate(flux=(apres-avant)/(as.numeric(nom_apres)-as.numeric(nom_avant))) 
+  mutate(flux=(apres-avant)) 
+  #pour renommer les colonnes
+  names(moyenne_groupe2_content2_C)[match(c('avant','apres'), names(moyenne_groupe2_content2_C))]<-c(nom_avant,nom_apres)
+  names(moyenne_groupe2_content2_C)[match(c('flux'), names(moyenne_groupe2_content2_C))]<-paste0('flux_',nom_avant)
+}
+
+moyenne_groupe2_surface_C<-moyenne_groupe_C %>% 
+  dplyr::select(OBJECTID,Shape_Area) %>% 
+  group_by(OBJECTID) %>% 
+  summarise(Shape_Area=mean(Shape_Area))
+
+  combine<- moyenne_groupe2_content2_C %>%  
+    merge(.,moyenne_groupe2_cate2,by.x='OBJECTID',by.y='OBJECTID') %>% 
+  dplyr::select(OBJECTID,starts_with('flux')) %>% 
+    merge(.,moyenne_groupe2_surface_C,by.x='OBJECTID',by.y='OBJECTID')
+  
+```
+
+Voici le détail des flux que l'on observe. 
+
+```{r flux C total}
+  bilan_C_total<- moyenne_groupe2_cate2 %>% 
+    ungroup() %>% 
+    dplyr::select(starts_with('flux')) %>% 
+    pivot_longer(.,seq(1,8)) 
+  
+  
+  bilan_C_total<-unique(bilan_C_total$value) %>% 
+    sort(.) %>% 
+    as.data.frame(.) 
+  names(bilan_C_total)<-'transition'
+  
+  for (annee in seq(2,9)) {
+    tmp<-combine %>% 
+      dplyr::select(c(1,annee,annee+8,Shape_Area))
+    
+    tmp<-tmp %>% 
+      rename(transition=names(tmp)[3]) %>% 
+      rename(carbon=names(tmp)[2])
+    
+    tmp2<-tmp%>% 
+      group_by(transition) %>% 
+      summarise(total_carbon=sum(carbon)*100,
+                total_area=sum(Shape_Area)) %>% 
+      mutate(carbon_per_area=total_carbon/1000000)
+    
+    names(tmp2)[4]<-colnames(moyenne_groupe2_content2_C)[annee]
+    
+    bilan_C_total<-tmp2 %>% 
+      dplyr::select(1,4) %>% 
+      left_join(bilan_C_total,.,by.x='transition',by.y='transition')
+  }
+  
+
+  bilan2_C_total<-bilan_C_total %>% 
+    pivot_longer(-1)   %>% 
+    separate(transition,into=c('avant','apres'),sep=" --> ") 
+    
+  bilan2_C_total[is.na(bilan2_C_total)]=0
+    
+  carbon_total<-  ggplot(data=bilan2_C_total) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(name),y= value))+
+    geom_point(aes(x=as.numeric(name),y= value))+
+    theme_grey(base_size=8)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_grid(apres~avant, drop=TRUE,labeller = label_both)+
+    ggtitle('variations totales du stockage de carbone en île de France')+
+    labs(x = "Year") +
+    labs(y = "tonnes de C") 
+  #ggsave("carbon_total.png",plot=carbon_total,width=297,height=210,units ='mm') 
+plot(carbon_total)
+```
+
+De manière plus informative, voici ce que cela donne en bilan net. La baisse de stock de C provient:
+
+* des coupes de forêt (**mais une coupe est suivie par la repousse de la forêt, normalement : comment compotabiliser cela?** )
+
+* des transformations de terres agricoles en prairie (impact positif)
+
+* des transformations des berges en forêts (impat posiotif)
+
+* de l'urbanisation: agricole vers urbain ou bien, dans une moindre mesure, agricole vers berges, vers semi-naturel, ou bien forêt vers urbain
+
+```{r C net}  
+  bilan_C_total[is.na(bilan_C_total)]=0
+  
+  bilan2_C_total<-bilan_C_total %>% 
+    pivot_longer(-1)   %>% 
+    separate(transition,into=c('avant','apres'),sep=" --> ") 
+    
+    bilan2b_C_total<-bilan2_C_total %>% 
+      mutate(value_reciproque=value) %>% 
+      mutate(value_reciproque=ifelse(avant==apres,0,value_reciproque)) %>% 
+      dplyr::select(-value)
+    
+    bilan2_C_total<-bilan2_C_total %>% 
+      left_join(bilan2b_C_total,by=c('name'='name','avant'='apres','apres'='avant')) %>% 
+      mutate(value_net=value+value_reciproque)
+    
+    bilan3_C_total<-bilan2_C_total     %>%
+      mutate(dx = pmin(avant, apres), dy = pmax(avant, apres))%>%
+      distinct(dx, dy,name,.keep_all = TRUE) %>%
+      dplyr::select(-dx, -dy)
+  
+  carbon_total_net<-  ggplot(data=bilan3_C_total) +
+    geom_hline(yintercept=0,color='grey')+
+    geom_line(aes(x=as.numeric(name),y= value_net))+
+    geom_point(aes(x=as.numeric(name),y= value_net))+
+    theme_grey(base_size=8)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_grid(apres~avant, drop=TRUE,labeller = label_both)+
+    ggtitle('variations totales nettes du stockage de carbone en île de France')+
+    labs(x = "Year") +
+    labs(y = "tonnes de C") 
+ # ggsave("carbon_total_net.png",plot=carbon_total_net,width=297,height=210,units ='mm') 
+  plot(carbon_total_net)
+
+```
+
+NB, à titre de vérification voici les variations de stockage de carbone par m2 de transition, pour chacune des transitions que nous observons. Si nos classes ("urbain", "semi-naturel"etc.) sont bien choisies, alors on s'attend à ce que la variation de stockage de C par m2 soit stablke au cours du temps.
+
+```{r C per m2}  
+  #initialisation du bilan
+ bilan_C_m2<- moyenne_groupe2_cate2 %>% 
+   ungroup() %>% 
+    dplyr::select(starts_with('flux')) %>% 
+   pivot_longer(.,seq(1,8)) 
+ bilan_C_m2<-unique(bilan_C_m2$value) %>% 
+   sort(.) %>% 
+   as.data.frame(.) 
+ names(bilan_C_m2)<-'transition'
+  
+  for (annee in seq(2,9)) {
+    tmp<-combine %>% 
+      dplyr::select(c(1,annee,annee+8,Shape_Area))
+    
+    tmp<-tmp %>% 
+      rename(transition=names(tmp)[3]) %>% 
+      rename(carbon=names(tmp)[2])
+    
+    tmp2<-tmp%>% 
+      group_by(transition) %>% 
+      summarise(total_carbon=sum(carbon)*100,
+                total_area=sum(Shape_Area)) %>% 
+      mutate(carbon_per_area=total_carbon/total_area)
+    
+    names(tmp2)[4]<-colnames(moyenne_groupe2_content2_C)[annee]
+
+    bilan_C_m2<-tmp2 %>% 
+      dplyr::select(1,4) %>% 
+      left_join(bilan_C_m2,.,by.x='transition',by.y='transition')
+    }
+  
+ 
+ 
+bilan_C2_m2<-bilan_C_m2 %>% 
+  pivot_longer(-1) %>% 
+    separate(transition,into=c('avant','apres'),sep=" --> ") 
+  
+carbon_per_surface<- ggplot(data=bilan_C2_m2) +
+  geom_hline(yintercept=0,color='grey')+
+  geom_line(aes(x=as.numeric(name),y= value))+
+    geom_point(aes(x=as.numeric(name),y= value))+
+    theme_grey(base_size=8)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    facet_grid(apres~avant, drop=TRUE,labeller = label_both)+
+    ggtitle('variation du stockage de carbone par m2')+
+    labs(x = "Year") +
+    labs(y = "kg de C par m2") 
+plot(carbon_per_surface)
+  #ggsave("carbon_per_surface.png",plot=carbon_per_surface,width=297,height=210,units ='mm')
+```
+
+## Analyse des services liés à la biodiversité: pollinisation et biodiv patrimoniale
+to be done
+
+# Analyse des services plus complexes: Flood, rétention de l'eau, rétention des N et P
+Contrairement aux services précédents, ces services dépendent de la localisation des changements que l'on observe : une urbanisation concentrée dans un même bassin versant n'aura pas les mêmes conséquences que si elle est diffuse.
+
+## Flood risk
+
+Bon, je ne suis pas trop sûr ici. 
+
+```{r raster load, echo = FALSE,warning = FALSE, message=FALSE}
+mos_1982 <- raster(x = "../1- MOS 81 postes/mos_1982_81p.tif")
+mos_1982 <- as.data.frame(mos_1982,xy=TRUE) %>% 
+  dplyr::rename('code_MOS'='mos_1982_81p')%>% 
+  left_join(.,correspondances,by=('code_MOS')) 
+  
+mos_1994 <- raster(x = "../1- MOS 81 postes/mos_1994_81p.tif")
+mos_1994 <- as.data.frame(mos_1994,xy=TRUE)%>% 
+  rename('code_MOS'='mos_1994_81p') %>% 
+  left_join(.,correspondances,by=('code_MOS')) 
+
+mos_2003 <- raster(x = "../1- MOS 81 postes/mos_2003_81p.tif")
+mos_2003 <- as.data.frame(mos_2003,xy=TRUE)%>% 
+  rename('code_MOS'='mos_2003_81p') %>% 
+  left_join(.,correspondances,by=('code_MOS')) 
+
+mos_2012 <- raster(x = "../1- MOS 81 postes/mos_2012_81p.tif")
+mos_2012 <- as.data.frame(mos_2012,xy=TRUE)%>% 
+  rename('code_MOS'='mos_2012_81p') %>% 
+  left_join(.,correspondances,by=('code_MOS')) 
+
+mos_2017 <- raster(x = "../1- MOS 81 postes/mos_2017_81p.tif")
+mos_2017 <- as.data.frame(mos_2017,xy=TRUE)%>% 
+  rename('code_MOS'='mos_2017_81p') %>% 
+  left_join(.,correspondances,by=('code_MOS')) 
+
+MOS_81_postes_raster<-mos_1982 %>% 
+  rename(code_MOS_1982=code_MOS) %>% 
+  rename(categorie_1982=categorie)
+MOS_81_postes_raster$'code_MOS_1994'<-unlist(mos_1994$code_MOS)
+MOS_81_postes_raster$'code_MOS_2003'<-mos_2003$code_MOS
+MOS_81_postes_raster$'code_MOS_2012'<-mos_2012$code_MOS
+MOS_81_postes_raster$'code_MOS_2017'<-mos_2017$code_MOS
+MOS_81_postes_raster$'categorie_1994'<-mos_1994$categorie
+MOS_81_postes_raster$'categorie_2003'<-mos_2003$categorie
+MOS_81_postes_raster$'categorie_2012'<-mos_2012$categorie
+MOS_81_postes_raster$'categorie_2017'<-mos_2017$categorie
+
+n_export_1982 <- raster(x = "../4- Nutrient Delivery Ratio/2- Résultats/1- Sorties InVEST/1982/n_export_82_correction.tif")
+n_export_2017 <- raster(x = "../4- Nutrient Delivery Ratio/2- Résultats/1- Sorties InVEST/2017/n_export_82_correction.tif")  
+
+n_export_1982 <-  as.data.frame(n_export_1982,xy=TRUE) %>% 
+  rename(n_export_1982=n_export_82_correction) %>% 
+  filter(!is.na(n_export_1982))
+
+MOS_81_postes_raster<-MOS_81_postes_raster %>% 
+  filter(!is.na(code_MOS_1982)) %>% 
+    mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+
+flood <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_1982_30mm.tif")  
+flood_1982 <-  as.data.frame(flood,xy=TRUE) %>% 
+  filter(!is.na(Runoff_retention_m3_1982_30mm)) %>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y)) 
+
+flood <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_1994_30mm.tif")  
+flood_1994 <-  as.data.frame(flood,xy=TRUE) %>% 
+  filter(!is.na(Runoff_retention_m3_1994_30mm)) %>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+flood <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_2003_30mm.tif")  
+flood_2003 <-  as.data.frame(flood,xy=TRUE) %>% 
+  filter(!is.na(Runoff_retention_m3_2003_30mm)) %>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+flood <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_2012_30mm.tif")  
+flood_2012 <-  as.data.frame(flood,xy=TRUE) %>% 
+  filter(!is.na(Runoff_retention_m3_2012_30mm)) %>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+flood <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_2017_30mm.tif")  
+flood_2017 <-  as.data.frame(flood,xy=TRUE) %>% 
+  filter(!is.na(Runoff_retention_m3_2017_30mm)) %>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+flood<-as.data.frame(flood_1982 )
+flood$'Runoff_retention_m3_1994_30mm'<-flood_1994$Runoff_retention_m3_1994_30mm
+flood$'Runoff_retention_m3_2003_30mm'<-flood_2003$Runoff_retention_m3_2003_30mm
+flood$'Runoff_retention_m3_2012_30mm'<-flood_2012$Runoff_retention_m3_2012_30mm
+flood$'Runoff_retention_m3_2017_30mm'<-flood_2017$Runoff_retention_m3_2017_30mm
+
+flood<-flood%>% 
+  left_join(.,MOS_81_postes_raster,by=c('x','y'))
+
+flood_tmp <- raster(x = "/Users/vincentviguie/IDEFESE Dropbox/SE_historiques/7-Urban flood risk/REVISED flood risk data/Runoff_retention_m3_2017_30mm.tif")  
+
+bassins_versant<-readOGR(dsn="../7-Urban flood risk/REVISED flood risk data/flood_risk_service_2017_30mm.shp", verbose = FALSE)
+bassins_versant2<-bassins_versant[, -(1:4)] 
+
+test<-rasterize( bassins_versant2,flood_tmp) 
+test2<-as.data.frame(test,xy=TRUE)
+test3<-test2 %>% 
+  filter(!is.na(layer))%>% 
+  mutate(x=as.integer(x*10),
+         y=as.integer(y))
+
+flood_et_bassin<-flood%>% 
+  left_join(.,test3,by=c('x','y'))
+
+
+# regressions par bassin versant -------------------------------------------
+
+#calcul des flux
+tmp<-flood_et_bassin %>% 
+  ungroup() %>% 
+  group_by(layer) %>% 
+  summarise(Runoff_mean_m3_1982_30mm=mean(Runoff_retention_m3_1982_30mm),
+            Runoff_mean_m3_1994_30mm=mean(Runoff_retention_m3_1994_30mm),
+            Runoff_mean_m3_2003_30mm=mean(Runoff_retention_m3_2003_30mm),
+            Runoff_mean_m3_2012_30mm=mean(Runoff_retention_m3_2003_30mm),
+            Runoff_mean_m3_2017_30mm=mean(Runoff_retention_m3_2017_30mm)) %>% 
+  mutate(evolution=Runoff_mean_m3_2017_30mm-Runoff_mean_m3_1982_30mm)
+
+flood_et_bassin2 <- flood_et_bassin %>% 
+  left_join(.,tmp,by='layer')
+
+
+
+```
+
+Voici la carte des variations de retention (pluie de 30mm) entre 1982 et 2017, en moyenne par bassin versant (pour éviter d'avoir un chiffre qui dépend de la taille du bassin, mais je ne sais pas si ça a un sens de faire ça)
+
+```{r map flood}
+r1 <- rasterize(cbind(flood_et_bassin2$x/10, flood_et_bassin2$y), flood_tmp, flood_et_bassin2$evolution)
+
+gplot_data <- function(x, maxpixels = 50000)  {
+  x <- raster::sampleRegular(x, maxpixels, asRaster = TRUE)
+  coords <- raster::xyFromCell(x, seq_len(raster::ncell(x)))
+  ## Extract values
+  dat <- utils::stack(as.data.frame(raster::getValues(x))) 
+  names(dat) <- c('value', 'variable')
+
+  dat <- dplyr::as.tbl(data.frame(coords, dat))
+
+  if (!is.null(levels(x))) {
+    dat <- dplyr::left_join(dat, levels(x)[[1]], 
+                            by = c("value" = "ID"))
+  }
+  dat
+}
+
+
+r2<- gplot_data(r1)
+
+mapi<-ggplot() +
+  #scale_fill_gradient2()+
+  geom_raster(data = r2, 
+            aes(x = x, y = y, fill = value))+
+  geom_sf(data=departements,fill=NA,lwd = 0.1)+
+  scale_fill_distiller(type = "div", 
+                       #palette='RdBu', 
+                       palette='Spectral', 
+                      # limit =  max(abs(combine$flux)) * c(-1, 1)
+                       #limit =  c(-50,50)
+                      na.value = NA
+                       )+
+  xlab("") + ylab("") +
+    annotation_scale(location = "bl", width_hint = 0.25,style='ticks') +
+    annotation_north_arrow(location = "tr", 
+                           which_north = "true", 
+        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+          style = north_arrow_fancy_orienteering,#
+        height = unit(0.3, "in"),
+        width = unit(0.3, "in")) +
+  theme(panel.background = element_rect(fill = 'white'),axis.ticks = element_blank(),axis.text = element_blank())+
+  coord_sf(xlim = c(582746.4, 747756.9), ylim = c(6773208, 6909306))+
+ labs(fill = "runoff\nretention")
+
+plot(mapi)
+
+ggsave(paste0("runoff_retention_map.png"), plot=mapi)
+```
+
+Au total, voici ce que ça donne (juste pour vérifier)
+
+```{r total flood}
+  flood_total<-flood_et_bassin2 %>% 
+  ungroup() %>% 
+  dplyr::select(c((1:7),18))%>% 
+    pivot_longer(-c(1,2,8)) %>% 
+    separate (name, into = c("rien1","rien2","rien3","annee","rien5"),sep="_") %>% 
+  dplyr::select(-c(4,5,6,8)) %>% 
+  group_by(annee) %>% 
+  summarise(value=sum(value))
+ # bilan2_C_total[is.na(bilan2_C_total)]=0
+    
+  p<-  ggplot(data=flood_total) +
+    geom_line(aes(x=as.numeric(annee),y= value))+
+    geom_point(aes(x=as.numeric(annee),y= value))+
+    theme_grey(base_size=12)+theme(axis.ticks = element_blank(),legend.position="bottom")+
+    ggtitle('variations totales du runoff retention en île de France')+
+    labs(x = "Year") +
+    labs(y = "m3") 
+  #ggsave("carbon_total.png",plot=carbon_total,width=297,height=210,units ='mm') 
+plot(p)
+```
+
+
+
+```{r evol}
+flood_et_bassin3<-flood_et_bassin2 %>% 
+  dplyr::select(evolution,categorie_1982,categorie_2017,layer) %>% 
+  mutate(flux=paste(categorie_1982,categorie_2017,sep=" --> ")) %>% 
+  mutate(flux=ifelse(
+    categorie_1982==categorie_2017,categorie_1982,flux 
+  )) %>% 
+  mutate(flux=as.factor(flux)) %>% 
+  filter(!is.na(flux)) %>% 
+  group_by(flux,categorie_1982,categorie_2017) %>% 
+  summarise(evolution=mean(evolution))
+
+p <- ggplot(flood_et_bassin3, aes(x=categorie_2017, y=evolution)) + 
+  geom_hline(yintercept=0,color='grey')+
+  #geom_violin()+
+  geom_point()+
+  facet_wrap('categorie_1982',labeller = label_both)+
+  theme_grey(base_size=8)+theme(axis.ticks = element_blank(),legend.position="bottom")
+#plot(p)
+
+```
+
+Voici une figure que je trouve plus parlante: c'est, pour chaque type de transition d'usage du sol, l'impact que cela a eu sur le runoff de chaque bassin versant. Les bassins versant sont en abscisse, et en ordonnée c'est la variation de runoff totale due à cette transition.
+
+On peut voir que ce qui a joué le plus grand rôle, c'est le passage d'agricole à des berges, et ce dans quasimment tous les bassins versants. C'est suivi du passage d'agricole à urbain. À l'inverse, le passage de berges à de la forêt, du semi naturel ou de l'urbain a eu un impact positif. Enfin, on peut aussi voir que le passage "urbain --> urbain" a aussi engendré des variations : les choix d’aménagement urbain ont impacté le runoff aussi (passage d'urbain peu dense à dense, par exemple).
+
+```{r variation runoff bassin}
+flood_et_bassin8<-flood_et_bassin2 %>% 
+  dplyr::select(layer,x,y,Runoff_retention_m3_1982_30mm,Runoff_retention_m3_2017_30mm,categorie_1982,categorie_2017) %>% 
+  #mutate(flux=paste(categorie_1982,categorie_2017,sep=" -> ")) %>% 
+  #mutate(flux=ifelse(
+  #  categorie_1982==categorie_2017,categorie_1982,flux 
+  #)) %>% 
+  #mutate(flux=as.factor(flux)) %>% 
+  #filter(!is.na(flux)) %>% 
+  group_by(layer,categorie_1982,categorie_2017) %>% 
+  summarise(evolution=sum(Runoff_retention_m3_2017_30mm-Runoff_retention_m3_1982_30mm)) %>%
+  ungroup() %>% 
+  filter(!is.na(categorie_1982)) %>% 
+  filter(!is.na(layer)) %>% 
+  mutate(layer=as.factor(layer)) %>% 
+  rename(`1982`=categorie_1982,
+         `2017`=categorie_2017)
+  
+
+
+runoff_retention_evolution <- ggplot(flood_et_bassin8, aes(x=layer, y=evolution)) +
+  geom_hline(yintercept=0,color='grey')+
+  #geom_violin()+
+  geom_bar(aes(fill=layer),stat="identity")+
+  facet_grid(`2017`~`1982`,labeller = label_both)+
+  theme_grey(base_size=15)+theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")+
+  xlab('River Basins')+
+  ylab('Evolution du runoff retention (m3)')+
+  ggtitle('Impact of land use changes on runoff retention in each river basin',
+  subtitle='1982-2017')
+plot(runoff_retention_evolution)
+ggsave("runoff_retention_evolution.png",plot=runoff_retention_evolution,width=297,height=210,units ='mm')
+
+flood_et_bassin8<-flood_et_bassin2 %>%
+  dplyr::select(layer,x,y,Runoff_retention_m3_1994_30mm,Runoff_retention_m3_2017_30mm,categorie_1994,categorie_2017) %>%
+  #mutate(flux=paste(categorie_1982,categorie_2017,sep=" -> ")) %>%
+  #mutate(flux=ifelse(
+  #  categorie_1982==categorie_2017,categorie_1982,flux
+  #)) %>%
+  #mutate(flux=as.factor(flux)) %>%
+  #filter(!is.na(flux)) %>%
+  group_by(layer,categorie_1994,categorie_2017) %>%
+  summarise(evolution=sum(Runoff_retention_m3_2017_30mm-Runoff_retention_m3_1994_30mm)) %>%
+  ungroup() %>%
+  filter(!is.na(categorie_1994)) %>%
+  filter(!is.na(layer)) %>%
+  mutate(layer=as.factor(layer)) %>%
+  rename(`1994`=categorie_1994,
+         `2017`=categorie_2017)
+
+
+p <- ggplot(flood_et_bassin8, aes(x=layer, y=evolution)) +
+  geom_hline(yintercept=0,color='grey')+
+  #geom_violin()+
+  geom_bar(aes(fill=layer),stat="identity")+
+  facet_grid(`2017`~`1994`,labeller = label_both)+
+  theme_grey(base_size=13)+theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")+
+  xlab('Bassins versants')+
+  ylab('Evolution du runoff retention (m3)')+
+  ggtitle('Impact des transitions sur le runoff retention de chaque bassin versant',
+  subtitle='1994-2017')
+plot(p)
+
+```
+
+```{r nutriment evol temps}
+flood_et_bassin8b<-flood_et_bassin2 %>%
+  dplyr::select(layer,x,y,Runoff_retention_m3_1994_30mm,Runoff_retention_m3_2003_30mm,categorie_1994,categorie_2003) %>%
+  #mutate(flux=paste(categorie_1982,categorie_2017,sep=" -> ")) %>%
+  #mutate(flux=ifelse(
+  #  categorie_1982==categorie_2017,categorie_1982,flux
+  #)) %>%
+  #mutate(flux=as.factor(flux)) %>%
+  #filter(!is.na(flux)) %>%
+  group_by(layer,categorie_1994,categorie_2003) %>%
+  summarise(evolution=sum(Runoff_retention_m3_2003_30mm-Runoff_retention_m3_1994_30mm)) %>%
+  ungroup() %>%
+  filter(!is.na(categorie_1994)) %>%
+  filter(!is.na(layer)) %>%
+  mutate(layer=as.factor(layer)) %>%
+  mutate(`1994`=categorie_1994,
+         `2017`=categorie_2003) %>% 
+  ungroup() 
+
+flood_et_bassin8<-flood_et_bassin8b%>% 
+  group_by(categorie_1994,categorie_2003) %>% 
+  summarise(evolution_0=quantile(evolution,probs=0.0),
+            evolution_25=quantile(evolution,probs=0.10),
+            evolution_50=quantile(evolution,probs=0.50),
+            evolution_75=quantile(evolution,probs=0.9),
+            evolution_100=quantile(evolution,probs=1.0),
+            )# %>% 
+ # pivot_longer(cols=c(3,4,5)) %>% 
+#  mutate(value=ifelse(abs(value)<1000,NA,value))
+
+q<-ggplot(flood_et_bassin8b)+ 
+  geom_hline(yintercept=0,color='grey')+
+  #geom_violin()+
+  #geom_bar(aes(fill=layer),stat="identity")+
+  geom_jitter(aes(x=categorie_2003,y = evolution),cex=1.2,position=position_jitter(0.2))+
+  facet_wrap('categorie_1994',labeller = label_both)+
+  theme_grey(base_size=8)+
+  xlab('Bassins versants')+
+  ylab('Evolution du runoff retention (m3)')+
+  ggtitle('Impact des transitions sur le runoff retention de chaque bassin versant',
+  subtitle='1994-2017')
+plot(q)
+
+
+p <- ggplot(flood_et_bassin8) +
+  geom_hline(yintercept=0,color='grey')+
+  #geom_violin()+
+  #geom_bar(aes(fill=layer),stat="identity")+
+  geom_boxplot(aes(x=categorie_2003,ymin = evolution_0, lower = evolution_25, middle = evolution_50, 
+                   upper = evolution_75, ymax = evolution_100),
+   stat = "identity")+
+  facet_wrap('categorie_1994',labeller = label_both)+
+  theme_grey(base_size=8)+
+  xlab('Bassins versants')+
+  ylab('Evolution du runoff retention (m3)')+
+  ggtitle('Impact des transitions sur le runoff retention de chaque bassin versant',
+  subtitle='1994-2017')
+plot(p)
+
+```
+
+## retention nutriments
+
+```{r retention nutriments}
+# n_export_1982 <- raster(x = "../4- Nutrient Delivery Ratio/2- Résultats/1- Sorties InVEST/1982_P_correction/n_export_1982.tif")
+# n_export_2017 <- raster(x = "../4- Nutrient Delivery Ratio/2- Résultats/1- Sorties InVEST/2017_P_correction/n_export_2017.tif")  
+# 
+# n_export_1982 <-  as.data.frame(n_export_1982,xy=TRUE) %>% 
+#   filter(!is.na(n_export_1982)) %>% 
+#     mutate(x=as.integer(x*10),
+#          y=as.integer(y)) 
+
+
+```
+
+# Récréation
+to be done!
+
+# Rafraîchissement
+idem
+
+
