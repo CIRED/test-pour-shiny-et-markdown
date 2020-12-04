@@ -1,0 +1,12 @@
+name: test-idefese
+title: test-idefese
+username:
+account: sdrif-simulation
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3348228
+bundleId: 3940767
+url: https://sdrif-simulation.shinyapps.io/test-idefese/
+when: 1607042367.54022
+asMultiple: FALSE
+asStatic: FALSE
